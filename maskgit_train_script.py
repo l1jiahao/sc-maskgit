@@ -10,6 +10,13 @@ import torch
 from muse_maskgit_pytorch import VQGanVAE, MaskGit, MaskGitTransformer
 from sklearn.model_selection import train_test_split
 
+import ray
+import tracemalloc
+from ray import tune
+from ray.air import session
+from ray.tune.schedulers import ASHAScheduler
+from ray.tune.search.optuna import OptunaSearch
+
 import wandb
 
 pwd = os.getcwd()
@@ -49,8 +56,8 @@ def npy_to_loader(data_path, cond_path, batch_size, valid_size=0.2):
     return (train_loader, test_loader)
 
 
-def train(train_monitor):
-    config = train_monitor.config
+def train(config):
+    run = wandb.init(project="sc-maskgit", config=config)
     set_seed()
     transformer = MaskGitTransformer(
         num_tokens=51,  # must be same as codebook size above
@@ -71,33 +78,33 @@ def train(train_monitor):
     ).cuda()
 
     train_loader, valid_loader = npy_to_loader(
-        "./data/data_bins.npy", "./data/condition.npy", batch_size=64
+        "/home/lijiahao/workbench/sc-maskgit/data/data_bins.npy", "/home/lijiahao/workbench/sc-maskgit/data/condition.npy", batch_size=64
     )
 
     optimizer = torch.optim.Adam(
-        base_maskgit.parameters(), lr=config.lr, weight_decay=config.weight_decay
+        base_maskgit.parameters(), lr=config['lr'], weight_decay=config['weight_decay']
     )
 
     # 定义一个 lambda 函数来逐步增加学习率
     def lr_lambda(step):
-        if step < config.lr_milestone:
-            return step / config.lr_milestone  # 学习率线性增加
+        if step < config['lr_milestone']:
+            return step / config['lr_milestone']  # 学习率线性增加
         else:
             return 1.0  # 达到目标学习率后保持不变
 
     # scheduler1 = torch.optim.lr_scheduler.ConstantLR(optimizer=optimizer, factor=1)
     scheduler1 = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     scheduler2 = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=config.max_step - config.lr_milestone
+        optimizer, T_max=config['max_step'] - config['lr_milestone']
     )
     scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer, milestones=[config.lr_milestone], schedulers=[scheduler1, scheduler2]
+        optimizer, milestones=[config['lr_milestone']], schedulers=[scheduler1, scheduler2]
     )
 
-    epoch = np.ceil(config.max_step / len(train_loader))
-    tq = tqdm(range(int(epoch)))
+    epoch = np.ceil(config['max_step'] / len(train_loader))
+    # tq = tqdm(range(int(epoch)))
     step = 0
-    for _ in tq:
+    for _ in range(int(epoch)):
         for images, texts in train_loader:
             images = images.cuda()
             texts = texts.cuda()
@@ -106,27 +113,59 @@ def train(train_monitor):
             loss.backward()
             optimizer.step()
             scheduler.step()
-            train_monitor.log(
+            run.log(
                 {
                     "BCE loss": loss.item(),
                     "lr": scheduler.get_last_lr()[0],
                     "train_step": step,
                 }
             )
+            session.report({"loss": loss.item()})
             step += 1
-            if step >= config.max_step:
+            if step >= config['max_step']:
                 break
         with torch.no_grad():
             for images, texts in valid_loader:
                 images = images.cuda()
                 texts = texts.cuda()
                 loss = base_maskgit(images, texts=texts)
-                train_monitor.log({"Valid BCE loss": loss.item()})
+                run.log({"Valid BCE loss": loss.item()})
 
     torch.save(base_maskgit.state_dict(), "maskgit.pt")
 
 
+def ray_tune():
+    ray.init(num_cpus=40, num_gpus=1)
+    tracemalloc.start()
+    search_space = {
+        "lr": tune.loguniform(1e-6, 1e-2),
+        "weight_decay": tune.loguniform(1e-6, 1e-3),
+        "max_step": tune.choice([600]),
+        "lr_milestone": tune.choice([100, 200]),
+        # "enc_dim": tune.choice(range(20, 25)),
+    }
+
+    max_num_epochs = 200
+    scheduler = ASHAScheduler(max_t=max_num_epochs, grace_period=10, reduction_factor=4)
+
+    optuna_search = OptunaSearch()
+
+    tuner = tune.Tuner(
+        tune.with_resources(tune.with_parameters(train), resources={"gpu": 1}),
+        tune_config=tune.TuneConfig(
+            search_alg=optuna_search,
+            scheduler=scheduler,
+            num_samples=200,
+            metric="loss",
+            mode="min",
+        ),
+        param_space=search_space,
+    )
+
+    results = tuner.fit()
+
+
 if __name__ == "__main__":
-    config = {"lr": 1e-3, "max_step": 800, "lr_milestone": 200, "weight_decay": 0.0045}
-    run = wandb.init(project="sc-maskgit", config=config)
-    train(train_monitor=run)
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    os.environ["RAY_SESSION_DIR"] = "/home/lijiahao/ray_session"
+    ray_tune()
