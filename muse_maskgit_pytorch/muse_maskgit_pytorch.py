@@ -272,7 +272,8 @@ class Transformer(nn.Module):
         self.mask_id = num_tokens if add_mask_id else None
 
         self.num_tokens = num_tokens
-        self.token_emb = nn.Embedding(num_tokens + int(add_mask_id), dim)
+        # self.token_emb = nn.Embedding(num_tokens + int(add_mask_id), dim)
+        self.token_emb = TimestepEmbedder(hidden_size=dim)
         self.pos_emb = nn.Embedding(seq_len, dim)
         self.seq_len = seq_len
 
@@ -396,7 +397,12 @@ class Transformer(nn.Module):
 
         # embed tokens
 
-        x = self.token_emb(x)
+        if isinstance(self.token_emb, TimestepEmbedder):
+            seq_len = x.shape[-1]
+            x = self.token_emb(rearrange(x, "b n -> (b n)"))
+            x = rearrange(x, "(b n) d -> b n d", n=seq_len, d=self.dim)
+        else:
+            x = self.token_emb(x)
         x = x + self.pos_emb(torch.arange(n, device=device))
 
         if self.self_cond:

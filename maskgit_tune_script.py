@@ -137,16 +137,16 @@ def train(config):
 def ray_tune():
     ray.init(num_cpus=40, num_gpus=1)
     tracemalloc.start()
+    step_range = [600]
     search_space = {
-        "lr": tune.loguniform(1e-6, 1e-2),
-        "weight_decay": tune.loguniform(1e-6, 1e-3),
-        "max_step": tune.choice([600]),
-        "lr_milestone": tune.choice([100, 200]),
+        "lr": tune.loguniform(1e-4, 5e-3),
+        "weight_decay": tune.loguniform(1e-5, 1e-3),
+        "max_step": tune.choice(step_range),
+        "lr_milestone": tune.choice([100]),
         # "enc_dim": tune.choice(range(20, 25)),
     }
 
-    max_num_epochs = 200
-    scheduler = ASHAScheduler(max_t=max_num_epochs, grace_period=10, reduction_factor=4)
+    scheduler = ASHAScheduler(max_t=max(step_range), grace_period=10, reduction_factor=4)
 
     optuna_search = OptunaSearch()
 
@@ -155,7 +155,7 @@ def ray_tune():
         tune_config=tune.TuneConfig(
             search_alg=optuna_search,
             scheduler=scheduler,
-            num_samples=200,
+            num_samples=50,
             metric="loss",
             mode="min",
         ),
