@@ -67,7 +67,9 @@ def train(config):
         dim_head=64,  # attention head dimension
         heads=8,  # attention heads,
         ff_mult=4,  # feedforward expansion factor
-        t5_name="t5-small",  # name of your T5, 如果没有 text 可以不用
+        t5_name="t5-small",  # name of your T5, 如果没有 text 可以不用,
+        focal_alpha=config['focal_alpha'],
+        focal_gamma=config['focal_gamma'],
     )
 
     base_maskgit = MaskGit(
@@ -143,6 +145,8 @@ def ray_tune():
         "weight_decay": tune.loguniform(1e-5, 1e-3),
         "max_step": tune.choice(step_range),
         "lr_milestone": tune.choice([100]),
+        "focal_alpha": tune.choice([0.1, 0.01, 0.001]),
+        "focal_gamma": tune.choice([2,3,4,5]),
         # "enc_dim": tune.choice(range(20, 25)),
     }
 

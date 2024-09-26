@@ -265,6 +265,8 @@ class Transformer(nn.Module):
         self_cond=False,
         add_mask_id=False,
         num_condition=9,
+        focal_gamma=2,
+        focal_alpha=0.01,
         **kwargs,
     ):
         super().__init__()
@@ -281,6 +283,16 @@ class Transformer(nn.Module):
         self.norm = LayerNorm(dim)
 
         self.dim_out = default(dim_out, num_tokens)
+        self.focal_loss = torch.hub.load(
+            "adeelh/pytorch-multi-class-focal-loss",
+            model="FocalLoss",
+            alpha=torch.tensor([focal_alpha] + [1] * (num_tokens - 1)),
+            gamma=focal_gamma,
+            reduction="mean",
+            force_reload=False,
+            ignore_index=-1,
+        )
+        print("use focal loss!")
         self.to_logits = nn.Linear(dim, self.dim_out, bias=False)
 
         # text conditioning
@@ -427,9 +439,10 @@ class Transformer(nn.Module):
             )
         else:
             # NOTE: 真要做一个 65536 的分类
-            loss = F.cross_entropy(
-                rearrange(logits, "b n c -> b c n"), labels, ignore_index=ignore_index
-            )
+            # loss = F.cross_entropy(
+            #     rearrange(logits, "b n c -> b c n"), labels, ignore_index=ignore_index
+            # )
+            loss = self.focal_loss(rearrange(logits, "b n c -> b c n"), labels)
 
         if not return_logits:
             return loss
